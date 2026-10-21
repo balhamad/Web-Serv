@@ -1,0 +1,143 @@
+/* ************************************************************************** */
+/*	*/
+/*	:::	  ::::::::   */
+/*   routing.cpp	:+:	  :+:	:+:   */
+/*	+:+ +:+	 +:+	 */
+/*   By: balhamad <balhamad@student.42.fr>	  +#+  +:+	   +#+	*/
+/*	+#+#+#+#+#+   +#+	   */
+/*   Created: 2026/02/18 11:17:30 by balhamad	  #+#	#+#	 */
+/*   Updated: 2026/04/05 20:16:53 by balhamad	 ###   ########.fr	   */
+/*	*/
+/* ************************************************************************** */
+
+#include <dirent.h>
+#include <sys/stat.h>
+#include <sstream>
+#include "webserv.hpp"
+#include "server.hpp"
+const LocationConfig* findLongestMatch(const std::string& uri, const std::map<std::string, LocationConfig>& locations) //or locationobj
+{
+	const LocationConfig* longestmatch = NULL;
+	int max_size  = 0;
+
+	for (std::map<std::string, LocationConfig>::const_iterator it = locations.begin(); it != locations.end(); ++it)
+	{
+		const std::string& locationPath = it->first;
+		if (uri.compare(0, locationPath.size(), locationPath) == 0)
+		{
+			if (locationPath[locationPath.length() - 1] == '/' || uri.size() == locationPath.size() || uri[locationPath.size()] == '/')
+			{
+				if (locationPath.size() > (unsigned long)max_size)
+				{
+					max_size = locationPath.size();
+					longestmatch = &(it->second);
+				}
+			}
+		}
+	}
+	return longestmatch;
+}
+
+int checkValidLocConfig(client &cli, server &srv, const LocationConfig& locConfig)
+{
+	(void)srv;
+	std::string reqMethod = cli.getReq().getMethod();
+	const std::vector<std::string>&allowedMethods= locConfig.getMethods();
+	if (std::find(allowedMethods.begin(), allowedMethods.end(), reqMethod) == allowedMethods.end())
+	{
+		cli.getRes().setStatusCode(METHOD_NOT_ALLOWED);
+		cli.setState(ERROR);
+		return 1;
+	}
+	else if((long long)cli.getContentLength()>locConfig.getMaxBodySize())
+	{
+		cli.getRes().setStatusCode(PAYLOAD_TOO_LARGE);
+		cli.setState(ERROR);
+		return 1;
+	}
+	else if(cli.getRes().getStatusCode()!=0)
+	{
+		cli.setState(ERROR);
+		return 1;
+	}
+	return 0;
+}
+// bool isCgiRequest(client &cli, const LocationConfig &loc)
+// {
+// 	// 1. Location must have a cgi_pass configured
+// 	if (!loc.getisCgiLoc())
+// 		return false;
+
+// 	// 2. URI extension must match configured cgi extension
+// 	std::string uri = cli.getReq().getUri();
+// 	size_t dot = uri.rfind('.');
+// 	if (dot == std::string::npos)
+// 		return false;
+
+// 	std::string ext = uri.substr(dot);     // ".py" or ".php"
+// 	return (ext == loc.getCgi()); // from your config
+// }
+
+int handleRouting(client &cli, server &srv)
+{
+	std::string uri = cli.getReq().getUri();
+	const std::map<std::string, LocationConfig>& locations = srv.getLocations();
+	const LocationConfig* matchedLocation = findLongestMatch(uri, locations);
+	cli.setLocation(matchedLocation);
+	if (matchedLocation)
+	{
+		if(checkValidLocConfig(cli, srv, *matchedLocation) == 1)
+		{
+			return 1;
+		}
+		if (cli.getIsCgi())
+			return setupCgi(cli, srv);
+		if (cli.getReq().getMethod() == "GET")
+		{
+			get_method(cli, srv, *matchedLocation, uri);
+		}
+		else if (cli.getReq().getMethod() == "POST")
+		{
+			post_method(cli, srv, *matchedLocation, uri);
+		}
+		else if (cli.getReq().getMethod() == "DELETE")
+		{
+		    struct stat st;
+		    std::string filePath = setupRootPath(cli, srv, *matchedLocation, uri);
+
+		    if (stat(filePath.c_str(), &st) != 0)
+		    {
+		        cli.getRes().setStatusCode(404);
+		        cli.setState(ERROR);
+		        return 1;
+		    }
+
+		    if (S_ISDIR(st.st_mode))
+		    {
+		        cli.getRes().setStatusCode(403);
+		        cli.setState(ERROR);
+		        return 1;
+		    }
+
+		    if (remove(filePath.c_str()) != 0)
+		    {
+		        cli.getRes().setStatusCode(403);
+		        cli.setState(ERROR);
+		        return 1;
+		    }
+
+		    cli.getRes().setStatusCode(204);
+		    cli.setState(SENDING_RESPONSE); // NOT ERROR
+		    return 0;
+		}
+	}
+	else
+	{
+		std::cout<<"out matched location\n";
+
+	}
+	return 1;
+
+}
+
+
